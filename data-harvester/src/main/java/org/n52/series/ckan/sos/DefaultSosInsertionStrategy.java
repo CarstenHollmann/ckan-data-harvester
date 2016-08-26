@@ -30,77 +30,37 @@
 package org.n52.series.ckan.sos;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.regex.Pattern;
 
-import org.joda.time.DateTime;
-import org.joda.time.DateTimeZone;
-import org.joda.time.format.DateTimeFormat;
-import org.joda.time.format.ISODateTimeFormat;
 import org.n52.series.ckan.beans.DataCollection;
 import org.n52.series.ckan.beans.DataFile;
 import org.n52.series.ckan.beans.ResourceField;
 import org.n52.series.ckan.beans.ResourceMember;
-import org.n52.series.ckan.da.CkanConstants;
 import org.n52.series.ckan.table.DataTable;
 import org.n52.series.ckan.table.ResourceKey;
 import org.n52.series.ckan.table.ResourceTable;
-import org.n52.series.ckan.util.GeometryBuilder;
 import org.n52.sos.ds.hibernate.InsertObservationDAO;
 import org.n52.sos.ds.hibernate.InsertSensorDAO;
-import org.n52.sos.encode.SensorMLEncoderv101;
-import org.n52.sos.exception.ows.concrete.DateTimeParseException;
 import org.n52.sos.ext.deleteobservation.DeleteObservationConstants;
 import org.n52.sos.ext.deleteobservation.DeleteObservationDAO;
 import org.n52.sos.ext.deleteobservation.DeleteObservationRequest;
-import org.n52.sos.ogc.OGCConstants;
 import org.n52.sos.ogc.gml.AbstractFeature;
-import org.n52.sos.ogc.gml.time.Time;
-import org.n52.sos.ogc.gml.time.Time.TimeIndeterminateValue;
-import org.n52.sos.ogc.gml.time.TimeInstant;
-import org.n52.sos.ogc.gml.time.TimePeriod;
 import org.n52.sos.ogc.om.AbstractPhenomenon;
 import org.n52.sos.ogc.om.OmConstants;
 import org.n52.sos.ogc.om.OmObservableProperty;
-import org.n52.sos.ogc.om.OmObservation;
 import org.n52.sos.ogc.om.OmObservationConstellation;
-import org.n52.sos.ogc.om.SingleObservationValue;
-import org.n52.sos.ogc.om.values.QuantityValue;
 import org.n52.sos.ogc.ows.OwsExceptionReport;
-import org.n52.sos.ogc.sensorML.SensorML;
-import org.n52.sos.ogc.sensorML.SensorML20Constants;
-import org.n52.sos.ogc.sensorML.SmlContact;
-import org.n52.sos.ogc.sensorML.SmlContactList;
-import org.n52.sos.ogc.sensorML.SmlResponsibleParty;
-import org.n52.sos.ogc.sensorML.elements.SmlCapabilities;
-import org.n52.sos.ogc.sensorML.elements.SmlClassifier;
-import org.n52.sos.ogc.sensorML.elements.SmlIdentifier;
-import org.n52.sos.ogc.sensorML.elements.SmlIo;
 import org.n52.sos.ogc.sos.SosInsertionMetadata;
-import org.n52.sos.ogc.sos.SosOffering;
-import org.n52.sos.ogc.swe.SweField;
-import org.n52.sos.ogc.swe.SweSimpleDataRecord;
-import org.n52.sos.ogc.swe.simpleType.SweObservableProperty;
-import org.n52.sos.ogc.swe.simpleType.SweQuantity;
-import org.n52.sos.ogc.swe.simpleType.SweText;
 import org.n52.sos.request.InsertSensorRequest;
 import org.n52.sos.service.Configurator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Strings;
-import com.vividsolutions.jts.geom.Geometry;
-
 import eu.trentorise.opendata.jackan.model.CkanDataset;
-import eu.trentorise.opendata.jackan.model.CkanOrganization;
 import eu.trentorise.opendata.jackan.model.CkanResource;
-import eu.trentorise.opendata.jackan.model.CkanTag;
 
 class DefaultSosInsertionStrategy implements SosInsertionStrategy {
 
@@ -183,36 +143,32 @@ class DefaultSosInsertionStrategy implements SosInsertionStrategy {
 
     boolean insertOrUpdateData(DataTable dataTable, DataCollection dataCollection) {
         boolean dataInserted = false;
+        CkanDataset dataset = dataCollection.getDataset();
         List<ResourceField> resourceFields = dataTable.getResourceMember().getResourceFields();
         PhenomenonParser phenomenonParser = new PhenomenonParser(uomParser);
         final List<Phenomenon> phenomena = phenomenonParser.parse(resourceFields);
+        FeatureBuilder foiBuilder = new FeatureBuilder(dataset);
 
         LOGGER.debug("Start insertion ...");
         Map<String, DataInsertion> dataInsertions = new HashMap<>();
         for (Entry<ResourceKey, Map<ResourceField, String>> rowEntry : dataTable.getTable().rowMap().entrySet()) {
 
             // TODO how and what to create in which order depends on the actual strategy chosen
-
-            CkanDataset dataset = dataCollection.getDataset();
-            FeatureBuilder foiBuilder = new FeatureBuilder(dataset);
+            // TODO how to create a FOI for mobile sensors, what would be the identifier? same as procedure?
             AbstractFeature feature = foiBuilder.createFeature(rowEntry.getValue());
 
             ObservationBuilder observationBuilder = new ObservationBuilder(rowEntry, uomParser);
 
             for (Phenomenon phenomenon : phenomena) {
-                String procedureId = createProcedureId(feature, phenomenon);
+                InsertSensorRequestBuilder insertSensorRequestBuilder = new InsertSensorRequestBuilder(feature, phenomenon, dataset);
+                String procedureId = insertSensorRequestBuilder.getProcedureId();
                 if ( !dataInsertions.containsKey(procedureId)) {
                     LOGGER.debug("InsertSensor with: procedure '{}' with phenomenon '{}' (unit '{}')",
                                  procedureId,
                                  phenomenon.getLabel(),
                                  phenomenon.getUom());
-                    InsertSensorRequest insertSensorRequest = prepareSmlInsertSensorRequest(feature,
-                                                                                            phenomenon,
-                                                                                            dataset);
-                    insertSensorRequest.setObservableProperty(phenomenaToIdList(phenomena));
-                    insertSensorRequest.setProcedureDescriptionFormat("http://www.opengis.net/sensorML/1.0.1");
 
-                    DataInsertion dataInsertion = new DataInsertion(insertSensorRequest, feature);
+                    DataInsertion dataInsertion = new DataInsertion(insertSensorRequestBuilder.create(), feature);
                     dataInsertions.put(procedureId, dataInsertion);
 
                     if (ckanSosReferencingCache != null) {
@@ -221,7 +177,6 @@ class DefaultSosInsertionStrategy implements SosInsertionStrategy {
                         CkanResource resource = dataFile.getResource();
                         dataInsertion.setReference(CkanSosObservationReference.create(resource));
                     }
-
                 }
 
                 DataInsertion dataInsertion = dataInsertions.get(procedureId);
@@ -313,190 +268,8 @@ class DefaultSosInsertionStrategy implements SosInsertionStrategy {
         return true;
     }
 
-    private List<String> phenomenaToIdList(List<Phenomenon> phenomena) {
-        List<String> ids = new ArrayList<>();
-        for (Phenomenon phenomenon : phenomena) {
-            ids.add(phenomenon.getId());
-        }
-        return ids;
-    }
-
-    private InsertSensorRequest prepareSmlInsertSensorRequest(AbstractFeature feature,
-                                                              Phenomenon phenomenon,
-                                                              CkanDataset dataset) {
-        final InsertSensorRequest insertSensorRequest = new InsertSensorRequest();
-        final org.n52.sos.ogc.sensorML.System system = new org.n52.sos.ogc.sensorML.System();
-        system.setDescription(dataset.getNotes());
-
-        final String procedureId = createProcedureId(feature, phenomenon);
-        final SosOffering sosOffering = new SosOffering(procedureId);
-        system.setInputs(Collections.<SmlIo< ? >> singletonList(createInput(phenomenon)))
-                .setOutputs(Collections.<SmlIo< ? >> singletonList(createOutput(phenomenon)))
-                .setKeywords(createKeywordList(feature, phenomenon, dataset))
-                .setIdentifications(createIdentificationList(feature, phenomenon))
-                .setClassifications(createClassificationList(feature, phenomenon))
-                .addCapabilities(createCapabilities(feature, phenomenon, sosOffering))
-                // .addContact(createContact(schemaDescription.getDataset())) // TODO
-                // ... // TODO
-                .setValidTime(createValidTimePeriod()).setIdentifier(procedureId);
-
-        SensorML sml = new SensorML();
-        sml.addMember(system);
-        system.setSensorDescriptionXmlString(encodeToXml(sml));
-
-        insertSensorRequest.setAssignedOfferings(Collections.singletonList(sosOffering));
-        insertSensorRequest.setAssignedProcedureIdentifier(procedureId);
-        insertSensorRequest.setProcedureDescription(sml);
-        return insertSensorRequest;
-    }
-
-    private static String encodeToXml(final SensorML sml) {
-        try {
-            return new SensorMLEncoderv101().encode(sml).xmlText();
-        }
-        catch (OwsExceptionReport ex) {
-            LOGGER.error("Could not encode SML to valid XML.", ex);
-            return ""; // TODO empty but valid sml
-        }
-    }
-
-    private SmlIo< ? > createInput(Phenomenon phenomeon) {
-        return new SmlIo<>(new SweObservableProperty().setDefinition(phenomeon.getId())).setIoName(phenomeon.getId());
-    }
-
-    private SmlIo< ? > createOutput(Phenomenon phenomeon) {
-        return new SmlIo<>(new SweQuantity().setUom(phenomeon.getUom()).setDefinition(phenomeon.getId())).setIoName(phenomeon.getId());
-    }
-
-    private List<String> createKeywordList(AbstractFeature feature,
-                                           Phenomenon phenomenon,
-                                           CkanDataset dataset) {
-        List<String> keywords = new ArrayList<>();
-        keywords.add("CKAN data");
-        if (feature.isSetName()) {
-            keywords.add(feature.getFirstName().getValue());
-        }
-        keywords.add(phenomenon.getLabel());
-        keywords.add(phenomenon.getId());
-        addDatasetTags(dataset, keywords);
-        return keywords;
-    }
-
-    private void addDatasetTags(CkanDataset dataset, List<String> keywords) {
-        for (CkanTag tag : dataset.getTags()) {
-            final String displayName = tag.getDisplayName();
-            if (displayName != null && !displayName.isEmpty()) {
-                keywords.add(displayName);
-            }
-        }
-    }
-
-    private List<SmlIdentifier> createIdentificationList(AbstractFeature feature, Phenomenon phenomenon) {
-        List<SmlIdentifier> idents = new ArrayList<>();
-        idents.add(new SmlIdentifier(
-                                     OGCConstants.UNIQUE_ID,
-                                     OGCConstants.URN_UNIQUE_IDENTIFIER,
-                                     // TODO check feautre id vs name
-                                     createProcedureId(feature, phenomenon)));
-        idents.add(new SmlIdentifier(
-                                     "longName",
-                                     "urn:ogc:def:identifier:OGC:1.0:longName",
-                                     createProcedureLongName(feature, phenomenon)));
-        return idents;
-    }
-
-    private String createProcedureId(AbstractFeature feature, Phenomenon phenomenon) {
-
-        // TODO procedure is dataset
-
-        StringBuilder procedureId = new StringBuilder();
-        procedureId.append(phenomenon.getLabel()).append("_");
-        procedureId = feature.isSetName()
-                ?  procedureId.append(feature.getFirstName().getValue())
-                : procedureId.append(feature.getIdentifier());
-        return procedureId.toString();
-    }
-
-    private String createProcedureLongName(AbstractFeature feature, Phenomenon phenomenon) {
-        StringBuilder phenomenonName = new StringBuilder();
-        phenomenonName.append(phenomenon.getLabel()).append("@");
-        if (feature.isSetName()) {
-            phenomenonName.append(feature.getFirstName().getValue());
-        }
-        else {
-            phenomenonName.append(feature.getIdentifier());
-        }
-        return phenomenonName.toString();
-    }
-
-    private List<SmlClassifier> createClassificationList(AbstractFeature feature, Phenomenon phenomenon) {
-        return Collections.singletonList(new SmlClassifier(
-                                                           "phenomenon",
-                                                           "urn:ogc:def:classifier:OGC:1.0:phenomenon",
-                                                           null,
-                                                           phenomenon.getId()));
-    }
-
-    private TimePeriod createValidTimePeriod() {
-        return new TimePeriod(new Date(), null);
-    }
-
-    private List<SmlCapabilities> createCapabilities(AbstractFeature feature,
-                                                     Phenomenon phenomenon,
-                                                     SosOffering offering) {
-        List<SmlCapabilities> capabilities = new ArrayList<>();
-        capabilities.add(createFeatureCapabilities(feature));
-        capabilities.add(createOfferingCapabilities(feature, phenomenon, offering));
-        // capabilities.add(createBboxCapabilities(feature)); // TODO
-        return capabilities;
-    }
-
-    private SmlCapabilities createFeatureCapabilities(AbstractFeature feature) {
-        SmlCapabilities featuresCapabilities = new SmlCapabilities("featuresOfInterest");
-        final SweSimpleDataRecord record = new SweSimpleDataRecord().addField(createTextField(
-                                                                                              SensorML20Constants.FEATURE_OF_INTEREST_FIELD_NAME,
-                                                                                              SensorML20Constants.FEATURE_OF_INTEREST_FIELD_DEFINITION,
-                                                                                              feature.getIdentifier()));
-        return featuresCapabilities.setDataRecord(record);
-    }
-
-    private SmlCapabilities createOfferingCapabilities(AbstractFeature feature,
-                                                       Phenomenon phenomenon,
-                                                       SosOffering offering) {
-
-        // TODO offering is dataset
-
-        SmlCapabilities offeringCapabilities = new SmlCapabilities("offerings");
-        offering.setIdentifier("Offering_" + createProcedureId(feature, phenomenon));
-        final SweSimpleDataRecord record = new SweSimpleDataRecord().addField(createTextField(
-                                                                                              "field_0",
-                                                                                              SensorML20Constants.OFFERING_FIELD_DEFINITION,
-                                                                                              offering.getIdentifier()));
-        return offeringCapabilities.setDataRecord(record);
-    }
-
-    private SweField createTextField(String name, String definition, String value) {
-        return new SweField(name, new SweText().setValue(value).setDefinition(definition));
-    }
-
-    private SmlCapabilities createBboxCapabilities(AbstractFeature feature) {
-        SmlCapabilities offeringCapabilities = new SmlCapabilities("observedBBOX");
-
-        // TODO
-
-        return offeringCapabilities;
-    }
-
-    private SmlContact createContact(CkanDataset dataset) {
-        CkanOrganization organisation = dataset.getOrganization();
-        SmlContactList contactList = new SmlContactList();
-        final SmlResponsibleParty responsibleParty = new SmlResponsibleParty();
-        responsibleParty.setOrganizationName(organisation.getTitle());
-
-        // TODO
-
-        contactList.addMember(responsibleParty);
-        return contactList;
+    private AbstractPhenomenon createPhenomenon(Phenomenon phenomenon) {
+        return new OmObservableProperty(phenomenon.getId());
     }
 
     private SosInsertionMetadata createSosInsertionMetadata(DataInsertion dataInsertion) {
@@ -504,11 +277,6 @@ class DefaultSosInsertionStrategy implements SosInsertionStrategy {
         metadata.setFeatureOfInterestTypes(dataInsertion.getFeaturesCharacteristics());
         metadata.setObservationTypes(dataInsertion.getObservationTypes());
         return metadata;
-    }
-
-
-    private AbstractPhenomenon createPhenomenon(Phenomenon phenomenon) {
-        return new OmObservableProperty(phenomenon.getId());
     }
 
 }
